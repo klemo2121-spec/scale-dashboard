@@ -528,30 +528,45 @@ button.active {
   }
 
   function computeAvgByLights24h(allPoints, fullEvents) {
-    const cutoff = Date.now() - 86400000;
-    const points = allPoints.filter(p => p.time.getTime() >= cutoff);
-    const segs = splitSegments(points, fullEvents);
-    let lossOn=0, hOn=0, lossOff=0, hOff=0;
-    for (const seg of segs) {
-      let subStart = 0;
-      for (let i = 1; i <= seg.length; i++) {
-        const atEnd = i === seg.length;
-        const transition = !atEnd && isLightsOn(seg[i].time) !== isLightsOn(seg[i-1].time);
-        if (atEnd || transition) {
-          const sub = seg.slice(subStart, i);
-          if (sub.length >= 2) {
-            const r = segmentRate(sub);
-            if (r) {
-              const mid = new Date((sub[0].time.getTime() + sub[sub.length-1].time.getTime()) / 2);
-              if (isLightsOn(mid)) { lossOn += r.diff; hOn += r.dtH; }
-              else { lossOff += r.diff; hOff += r.dtH; }
-            }
-          }
-          subStart = i;
-        }
+    // Use exact last lights-ON and lights-OFF windows (Thai timezone)
+    const now = new Date();
+    const nowMs = now.getTime();
+    const todayStr = now.toLocaleDateString("en-CA", {timeZone: THAILAND_TIMEZONE});
+    const todayMidnight = new Date(todayStr + "T00:00:00+07:00").getTime();
+    const today9AM = todayMidnight + 9 * 3600000;
+    const today9PM = todayMidnight + 21 * 3600000;
+    const yest9AM = today9AM - 86400000;
+    const yest9PM = today9PM - 86400000;
+
+    // Last complete lights-ON window (21:00 -> 09:00)
+    let onStart, onEnd;
+    if (nowMs >= today9PM) { onStart = today9PM; onEnd = nowMs; }
+    else if (nowMs >= today9AM) { onStart = yest9PM; onEnd = today9AM; }
+    else { onStart = yest9PM; onEnd = nowMs; }
+
+    // Last complete lights-OFF window (09:00 -> 21:00)
+    let offStart, offEnd;
+    if (nowMs >= today9PM) { offStart = today9AM; offEnd = today9PM; }
+    else if (nowMs >= today9AM) { offStart = today9AM; offEnd = nowMs; }
+    else { offStart = yest9AM; offEnd = yest9PM; }
+
+    function calcRate(start, end) {
+      const pts = allPoints.filter(p => p.time.getTime() >= start && p.time.getTime() <= end);
+      const segs = splitSegments(pts, fullEvents);
+      let loss = 0, h = 0;
+      for (const seg of segs) {
+        const dtH = (seg[seg.length-1].time.getTime() - seg[0].time.getTime()) / 3600000;
+        if (dtH < 5/60) continue;
+        const r = segmentRate(seg);
+        if (r) { loss += r.diff; h += r.dtH; }
       }
+      return h > 0 ? loss / h : null;
     }
-    return { avgOn: hOn > 0 ? lossOn/hOn : null, avgOff: hOff > 0 ? lossOff/hOff : null };
+
+    return {
+      avgOn: calcRate(onStart, onEnd),
+      avgOff: calcRate(offStart, offEnd)
+    };
   }
 
   function buildDrybackPct(points, fullEvents) {
