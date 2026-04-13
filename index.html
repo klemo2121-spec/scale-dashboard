@@ -75,34 +75,35 @@
       <button id="modeNormal" class="active" onclick="setGraphMode('normal')">Normal</button>
       <button id="modeDryback" onclick="setGraphMode('dryback')">Dry Back</button>
     </div>
-    <div class="legend-row">
-      <span><span class="legend-dot" style="background:#fff;opacity:0.4;"></span>Lights ON</span>
-      <span><span class="legend-dot" style="background:#111;border:1px solid #444;"></span>Lights OFF</span>
-    </div>
-    <div class="chart-wrap">
-      <div class="canvas-holder"><canvas id="chart"></canvas></div>
-    </div>
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding:0 4px;">
-      <div style="display:flex;gap:6px;">
-        <button onclick="panChart(-0.25)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">◀</button>
-        <button onclick="panChart(0.25)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">▶</button>
-      </div>
-      <div style="display:flex;gap:6px;">
-        <button onclick="zoomChart(0.5)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">+</button>
-        <button onclick="zoomChart(2)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">−</button>
-        <button onclick="resetZoom()" style="background:#333;font-size:12px;padding:6px 12px;min-width:0;border-radius:12px;">Reset</button>
-        <button onclick="openFullscreen()" style="background:#333;font-size:14px;padding:6px 12px;min-width:0;border-radius:12px;">⛶</button>
-      </div>
-    </div>
-    <div class="actions">
-      <button id="btn6" onclick="setRange(6)">6 Hours</button>
-      <button id="btn12" onclick="setRange(12)">12 Hours</button>
-      <button id="btn24" class="active" onclick="setRange(24)">24 Hours</button>
-      <button id="btn168" onclick="setRange(168)">7 Days</button>
-      <button id="btn720" onclick="setRange(720)">30 Days</button>
-      <button id="btnDay" onclick="setRangeMode('day')">Last Day</button>
-      <button id="btnNight" onclick="setRangeMode('night')">Last Night</button>
-    </div>
+    <div id="lightsBtn" style="margin:10px auto 0;display:inline-block;padding:8px 24px;border-radius:16px;font-size:14px;font-weight:700;"></div>
+
+```
+<div class="chart-wrap">
+  <div class="canvas-holder"><canvas id="chart"></canvas></div>
+</div>
+<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding:0 4px;">
+  <div style="display:flex;gap:6px;">
+    <button onclick="panChart(-0.25)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">◀</button>
+    <button onclick="panChart(0.25)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">▶</button>
+  </div>
+  <div style="display:flex;gap:6px;">
+    <button onclick="zoomChart(0.5)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">+</button>
+    <button onclick="zoomChart(2)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">−</button>
+    <button onclick="resetZoom()" style="background:#333;font-size:12px;padding:6px 12px;min-width:0;border-radius:12px;">Reset</button>
+    <button onclick="openFullscreen()" style="background:#333;font-size:14px;padding:6px 12px;min-width:0;border-radius:12px;">⛶</button>
+  </div>
+</div>
+<div class="actions">
+  <button id="btn6" onclick="setRange(6)">6 Hours</button>
+  <button id="btn12" onclick="setRange(12)">12 Hours</button>
+  <button id="btn24" class="active" onclick="setRange(24)">24 Hours</button>
+  <button id="btn168" onclick="setRange(168)">7 Days</button>
+  <button id="btn720" onclick="setRange(720)">30 Days</button>
+  <button id="btnDay" onclick="setRangeMode('day')">Last Day</button>
+  <button id="btnNight" onclick="setRangeMode('night')">Last Night</button>
+</div>
+```
+
   </div>
 </div>
 
@@ -113,13 +114,13 @@
   const THAILAND_TIMEZONE = "Asia/Bangkok";
   const LIGHTS_ON_START = 21;
   const LIGHTS_ON_END = 9;
-  const IRRIGATION_JUMP_THRESHOLD = 40;
+  const IRRIGATION_JUMP_THRESHOLD = 30;
   const IRRIGATION_SETTLE_MINUTES = 3;
   const IRRIGATION_SEARCH_EXTRA_MINUTES = 2;
   const DAY_DRYBACK_TARGET = 0.06;
   const NIGHT_DRYBACK_TARGET = 0.25;
-  const MAX_VALID_RATE_GH = 60;
-  const MIN_SEGMENT_LOSS_G = 2;
+  const MAX_VALID_RATE_GH = 150;
+  const MIN_SEGMENT_LOSS_G = 0.5;
   const MAX_DRYBACK_PCT = 40;
   const DRY_WEIGHT_G = 1200; // pot + dry coco + plant (no water)
   const IRRIGATION_TIME_CORRECTION_MS = 10 * 60 * 1000; // subtract 10 min from detected time
@@ -177,6 +178,11 @@
       const jump=points[i].value-points[i-1].value;
       if(jump<IRRIGATION_JUMP_THRESHOLD){i++;continue;}
       const triggerIndex=i, weightBeforeJump=points[i-1].value, triggerTime=points[i].time;
+      // Skip if weight was dropping sharply before the jump (pot movement, not irrigation)
+      if(i>=3){
+        const prevDrop=points[i-1].value-points[i-3].value; // should be small or positive if irrigation
+        if(prevDrop < -30) { i++; continue; } // was dropping > 30g in 2 readings before jump = not irrigation
+      }
       let peakWeight=points[i].value, peakIndex=i, j=i+1;
       while(j<points.length){
         const dt=points[j].time.getTime()-points[peakIndex].time.getTime();
@@ -202,7 +208,7 @@
       } else if(candidates.length===1){
         stableWeight=candidates[0].value; stableIndex=candidates[0].index; stableTime=candidates[0].time;
       }
-      const excludeEnd=Math.max(stableTime.getTime(),searchEnd);
+      const excludeEnd=stableTime.getTime()+60*1000; // 1 min after stable
       events.push({triggerIndex,triggerTime,weightBeforeJump,peakWeight,peakIndex,stableIndex,stableWeight,stableTime,irrigationAmount,excludeStart:triggerTime.getTime(),excludeEnd});
       // 20-minute lockout after trigger
       const lockoutEnd=triggerTime.getTime()+20*60*1000;
@@ -212,7 +218,7 @@
   }
 
   function detectFlushEvents(irrigationEvents, points) {
-    const FLUSH_MULTI_WINDOW_MS=20*60*1000, FLUSH_MULTI_COUNT=3, FLUSH_DURATION_MS=60*1000;
+    const FLUSH_MULTI_WINDOW_MS=10*60*1000, FLUSH_MULTI_COUNT=3, FLUSH_DURATION_MS=60*1000;
     const flushGroups=new Set();
     for(let i=0;i<irrigationEvents.length;i++){
       const group=[i];
@@ -222,10 +228,7 @@
       }
       if(group.length>=FLUSH_MULTI_COUNT) group.forEach(idx=>flushGroups.add(idx));
     }
-    for(let i=0;i<irrigationEvents.length;i++){
-      const ev=irrigationEvents[i];
-      if(points[ev.peakIndex].time.getTime()-ev.triggerTime.getTime()>=FLUSH_DURATION_MS) flushGroups.add(i);
-    }
+    // Duration-based flush detection removed - only use multi-irrigation detection
     if(!flushGroups.size) return [];
     const sortedIdxs=[...flushGroups].sort((a,b)=>a-b);
     const flushEvents=[]; let gStart=sortedIdxs[0], gEnd=sortedIdxs[0];
@@ -253,21 +256,25 @@
   }
 
   function segmentRate(seg){
-    const first=seg[0],last=seg[seg.length-1],diff=first.value-last.value;
+    if(seg.length<2)return null;
+    const first=seg[0],last=seg[seg.length-1];
     const dtH=(last.time.getTime()-first.time.getTime())/3600000;
-    if(dtH<=0||diff<MIN_SEGMENT_LOSS_G)return null;
-    const rate=diff/dtH;if(rate>MAX_VALID_RATE_GH)return null;
+    if(dtH<=0)return null;
+    const diff=first.value-last.value;
+    if(diff<MIN_SEGMENT_LOSS_G)return null;
+    const rate=diff/dtH;
+    if(rate>MAX_VALID_RATE_GH)return null;
     return{diff,dtH,rate};
   }
 
   function computeLastHourGh(points,fullEvents){
-    const now=points[points.length-1].time.getTime(),cutoff=now-3600000;
-    const filtered=points.filter(p=>p.time.getTime()>=cutoff);
+    const now=Date.now(),cutoff=now-3600000;
+    const filtered=points.filter(p=>p.time.getTime()>=cutoff&&p.time.getTime()<=now);
     const segs=splitSegments(filtered,fullEvents);
     let totalLoss=0,totalH=0;
     for(const seg of segs){
       const dtH=(seg[seg.length-1].time.getTime()-seg[0].time.getTime())/3600000;
-      if(dtH<5/60)continue;const r=segmentRate(seg);if(r){totalLoss+=r.diff;totalH+=r.dtH;}
+      if(dtH<2/60)continue;const r=segmentRate(seg);if(r){totalLoss+=r.diff;totalH+=r.dtH;}
     }
     return totalH>0?totalLoss/totalH:null;
   }
@@ -290,7 +297,7 @@
       const segs=splitSegments(pts,fullEvents);let loss=0,h=0;
       for(const seg of segs){
         const dtH=(seg[seg.length-1].time.getTime()-seg[0].time.getTime())/3600000;
-        if(dtH<5/60)continue;const r=segmentRate(seg);if(r){loss+=r.diff;h+=r.dtH;}
+        if(dtH<2/60)continue;const r=segmentRate(seg);if(r){loss+=r.diff;h+=r.dtH;}
       }
       return h>0?loss/h:null;
     }
@@ -616,6 +623,16 @@
     lastAnalysis={allPoints,selectedPoints,analysis};updateStats(analysis);updateChart(selectedPoints,analysis);
   }
 
+  function updateLightsBtn() {
+    const el = document.getElementById("lightsBtn");
+    if (!el) return;
+    const on = isLightsOn(new Date());
+    el.innerText = on ? "🟢 Lights ON" : "🔴 Lights OFF";
+    el.style.background = on ? "rgba(107,245,161,0.2)" : "rgba(255,90,90,0.2)";
+    el.style.color = on ? "#6bf5a1" : "#ff5a5a";
+    el.style.border = on ? "1px solid rgba(107,245,161,0.4)" : "1px solid rgba(255,90,90,0.4)";
+  }
+
   async function updateWeight(){
     try{
       const res=await fetch(firebaseWeightUrl+"?t="+Date.now()),weight=await res.json();
@@ -676,14 +693,16 @@
   }
 
   updateWeight();
+  updateLightsBtn();
   setRange(24);
   setInterval(updateWeight,2000);
+  setInterval(updateLightsBtn, 30000);
   setInterval(()=>{
     if(currentRangeMode){const period=getLightsPeriod(currentRangeMode);fetchDataWindow(period.start,period.end);}
     else fetchData(currentRange);
   },60000);
 </script>
 
-  <div style="text-align:center;color:rgba(255,255,255,0.2);font-size:11px;padding:10px;">v 12/04/2026 22:27</div>
+  <div style="text-align:center;color:rgba(255,255,255,0.2);font-size:11px;padding:10px;">v 13/04/2026 06:25</div>
 </body>
 </html>
