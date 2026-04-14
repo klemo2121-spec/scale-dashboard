@@ -50,12 +50,12 @@
     <div class="sub">Live from Firebase every 2s</div>
     <div class="stats-row">
       <div class="mini-stat"><div class="mini-label" id="rangeLabel">24h Range</div><div class="mini-value" id="rangeSelected">--</div></div>
-      <div class="mini-stat"><div class="mini-label">Min / Max</div><div class="mini-value" id="minmax">--</div></div>
+      <div class="mini-stat"><div class="mini-label">Last Runoff</div><div class="mini-value" id="lastRunoff">--</div></div>
       <div class="mini-stat"><div class="mini-label">Dryback</div><div class="mini-value" id="drybackValue">--</div></div>
       <div class="mini-stat"><div class="mini-label">Time Since Irrigation</div><div class="mini-value" id="timeSinceIrr">--</div></div>
-      <div class="mini-stat"><div class="mini-label">Avg Lights OFF g/h</div><div class="mini-value" id="avgNightGh">--</div></div>
-      <div class="mini-stat"><div class="mini-label">Last Hour g/h</div><div class="mini-value" id="lastHourGh">--</div></div>
-      <div class="mini-stat"><div class="mini-label">Avg Lights ON g/h</div><div class="mini-value" id="avgDayGh">--</div></div>
+      <div class="mini-stat"><div class="mini-label">Avg Lights OFF</div><div class="mini-value" id="avgNightGh">--</div></div>
+      <div class="mini-stat"><div class="mini-label">Last Hour</div><div class="mini-value" id="lastHourGh">--</div></div>
+      <div class="mini-stat"><div class="mini-label">Avg Lights ON</div><div class="mini-value" id="avgDayGh">--</div></div>
       <div class="mini-stat"><div class="mini-label">Last Saturation</div><div class="mini-value" id="lastSaturation">--</div></div>
       <div class="mini-stat"><div class="mini-label">Distance to Target</div><div class="mini-value" id="distanceToTarget">--</div></div>
       <div class="mini-stat"><div class="mini-label">Last Irrigation Amount</div><div class="mini-value" id="lastIrrAmount">--</div></div>
@@ -93,14 +93,14 @@
     <div class="legend-row" style="margin-top:12px;">
       <span><span class="legend-dot" style="background:#4da3ff;"></span>Weight</span>
       <span><span style="font-size:13px;">▼</span> <span style="color:#6bf5a1;">Irrigation</span></span>
-      <span><span style="font-size:13px;">★</span> <span style="color:#ffe066;">Saturation</span></span>
+      <span><span style="display:inline-block;width:18px;height:2px;border-top:2px dashed #ff5050;vertical-align:middle;margin-right:4px;"></span><span style="color:#ff5050;">Saturation</span></span>
     </div>
     <div class="actions">
       <button id="btn6" onclick="setRange(6)">6 Hours</button>
       <button id="btn12" onclick="setRange(12)">12 Hours</button>
       <button id="btn24" class="active" onclick="setRange(24)">24 Hours</button>
       <button id="btn168" onclick="setRange(168)">7 Days</button>
-      <button id="btn720" onclick="setRange(720)">30 Days</button>
+      <button id="btn1" onclick="setRange(1)">1 Hour</button>
       <button id="btnDay" onclick="setRangeMode('day')">Last Day</button>
       <button id="btnNight" onclick="setRangeMode('night')">Last Night</button>
     </div>
@@ -118,11 +118,14 @@
   const IRRIGATION_SETTLE_MINUTES = 3;
   const IRRIGATION_SEARCH_EXTRA_MINUTES = 2;
   const DAY_DRYBACK_TARGET = 0.06;
-  const NIGHT_DRYBACK_TARGET = 0.25;
+  const NIGHT_DRYBACK_TARGET = 0.30;
   const MAX_VALID_RATE_GH = 150;
   const MIN_SEGMENT_LOSS_G = 0.5;
   const MAX_DRYBACK_PCT = 40;
-  const DRY_WEIGHT_G = 1200;
+  const POT_DRY_G   = 1200;  // עציץ + קוקו יבש (גרם) — לעדכן עם משקל חדש
+  const WATER_AT_FC = 950;   // מים בקוקו ב-field capacity — הנחה! לעדכן עם משקל חדש
+  const POT_SIZE_LITERS = 2.0;          // נפח העציץ בליטר
+  const ML_PER_PCT = POT_SIZE_LITERS * 10; // 1% = 20ml לעציץ 2L
   const IRRIGATION_TIME_CORRECTION_MS = 10 * 60 * 1000;
 
   // ── NEW: low-weight filter constants ──────────────────────────────────────
@@ -203,6 +206,16 @@
       if(i>=3){
         const prevDrop=points[i-1].value-points[i-3].value;
         if(prevDrop < -30) { i++; continue; }
+      }
+      // ── סינון bounce: ירידה ואז עלייה = רעש סנסור, לא השקיה ──
+      // Pattern: נקודה[i-2]=רגיל → נקודה[i-1]=ירידה → נקודה[i]=עלייה
+      // אם השינוי נטו מ-[i-2] ל-[i] קטן מ-THRESHOLD → זה bounce, לא השקיה
+      if(i>=2){
+        const dipDrop = points[i-1].value - points[i-2].value;
+        const netChange = points[i].value - points[i-2].value;
+        if(dipDrop < -10 && netChange < IRRIGATION_JUMP_THRESHOLD){
+          i++; continue;
+        }
       }
       let peakWeight=points[i].value, peakIndex=i, j=i+1;
       while(j<points.length){
@@ -322,20 +335,22 @@
     return{avgOn:calcRate(onStart,onEnd),avgOff:calcRate(offStart,offEnd)};
   }
 
-  function buildDrybackPct(points,fullEvents){
+  function buildDrybackPct(points,fullEvents,dryWeight){
     return points.map(p=>{
       const sat=getActiveSat(p,fullEvents);if(!sat)return null;
-      const waterAtSat=sat.stableWeight-DRY_WEIGHT_G;
+      const dw = dryWeight ?? POT_DRY_G;
+      const waterAtSat=sat.stableWeight-dw;
       if(waterAtSat<=0)return null;
       const pct=(sat.stableWeight-p.value)/waterAtSat*100;
       if(pct<0)return 0;if(pct>MAX_DRYBACK_PCT)return null;return pct;
     });
   }
 
-  function getDryback(currentWeight,satWeight){
+  function getDryback(currentWeight,satWeight,dryWeight){
     if(currentWeight==null||satWeight==null||satWeight<=0)return{grams:null,percent:null};
+    const dw = dryWeight ?? POT_DRY_G;
     const grams=Math.max(0,satWeight-currentWeight);
-    const waterAtSat=satWeight-DRY_WEIGHT_G;
+    const waterAtSat=satWeight-dw;
     if(waterAtSat<=0)return{grams,percent:null};
     const percent=(grams/waterAtSat)*100;
     if(percent>MAX_DRYBACK_PCT)return{grams:null,percent:null};
@@ -356,6 +371,13 @@
     return h===0?m+"m":h+"h "+m%60+"m";
   }
 
+  // DRY_WEIGHT_G דינמי — מתעדכן אוטומטית לפי הרוויה האחרונה
+  function getDryWeightG(lastStableWeight) {
+    if (!lastStableWeight || lastStableWeight <= 0) return POT_DRY_G;
+    const dw = lastStableWeight - WATER_AT_FC;
+    return dw > POT_DRY_G ? dw : POT_DRY_G; // לא פחות מהעציץ הריק
+  }
+
   function analyzeData(allPoints,selectedPoints){
     const fullEvents=detectIrrigationEvents(allPoints);
     const flushEvents=detectFlushEvents(fullEvents,allPoints);
@@ -366,7 +388,9 @@
     const baseWeight=currentWeightLive??(allPoints.length?allPoints[allPoints.length-1].value:null);
     const lastIrr=fullEvents.length?fullEvents[fullEvents.length-1]:null;
     const activeSat=lastIrr?lastIrr.stableWeight:null;
-    const dryback=getDryback(baseWeight,activeSat);
+    // DRY_WEIGHT_G מתעדכן לפי הרוויה האחרונה
+    const dynamicDryWeight = getDryWeightG(activeSat);
+    const dryback=getDryback(baseWeight,activeSat,dynamicDryWeight);
     const timeSinceIrr=lastIrr?Date.now()-lastIrr.triggerTime.getTime():null;
     const lastHourGh=computeLastHourGh(allPoints,fullEvents);
     const{avgOn,avgOff}=computeAvgByLights24h(allPoints,fullEvents);
@@ -405,29 +429,62 @@
     });
     // ─────────────────────────────────────────────────────────────────────
 
-    const drybackSeries=buildDrybackPct(selectedPoints,fullEvents);
+    const drybackSeries=buildDrybackPct(selectedPoints,fullEvents,dynamicDryWeight);
     const now=new Date();
     const targetPct=isLightsOn(now)?DAY_DRYBACK_TARGET:NIGHT_DRYBACK_TARGET;
-    const waterAtSat=activeSat!=null?activeSat-DRY_WEIGHT_G:null;
+    const waterAtSat=activeSat!=null?activeSat-dynamicDryWeight:null;
     const targetWeight=waterAtSat!=null&&waterAtSat>0
-      ?DRY_WEIGHT_G+(waterAtSat*(1-targetPct)):null;
+      ?dynamicDryWeight+(waterAtSat*(1-targetPct)):null;
     const distanceToTarget=targetWeight!=null&&baseWeight!=null?Math.max(0,baseWeight-targetWeight):null;
-    return{fullEvents,flushEvents,minVal,maxVal,rangeVal,rangePercent,dryback,activeSat,lastIrr,timeSinceIrr,lastHourGh,avgOn,avgOff,irrigationMarkers,saturationPoints,drybackSeries,targetWeight,distanceToTarget};
+    return{fullEvents,flushEvents,minVal,maxVal,rangeVal,rangePercent,dryback,activeSat,lastIrr,timeSinceIrr,lastHourGh,avgOn,avgOff,irrigationMarkers,saturationPoints,drybackSeries,targetWeight,distanceToTarget,dynamicDryWeight};
   }
 
   function updateStats(a){
-    const rangeMap={6:"6h Range",12:"12h Range",24:"24h Range",168:"7d Range",720:"30d Range"};
+    const rangeMap={1:"1h Range",6:"6h Range",12:"12h Range",24:"24h Range",168:"7d Range"};
     document.getElementById("rangeLabel").innerText=rangeMap[currentRange]||"Range";
     document.getElementById("rangeSelected").innerText=a.rangeVal!=null?roundNum(a.rangeVal)+" g / "+roundNum(a.rangePercent||0)+"%":"--";
-    document.getElementById("minmax").innerText=a.minVal!=null?roundNum(a.minVal)+" / "+roundNum(a.maxVal):"--";
+
+    // Runoff
+    const waterAtSatForPct = a.activeSat!=null ? a.activeSat - (a.dynamicDryWeight??POT_DRY_G) : null;
+    if(a.lastIrr && a.lastIrr.peakWeight!=null && a.lastIrr.stableWeight!=null) {
+      const runoffG = Math.max(0, a.lastIrr.peakWeight - a.lastIrr.stableWeight);
+      // runoff% = כמה יצא מתוך מה שנכנס
+      const runoffPct = a.lastIrr.irrigationAmount>0 ? (runoffG/a.lastIrr.irrigationAmount*100) : null;
+      document.getElementById("lastRunoff").innerText = roundNum(runoffG)+"g" + (runoffPct!=null?" / "+roundNum(runoffPct)+"%":"");
+    } else {
+      document.getElementById("lastRunoff").innerText = "--";
+    }
+
     document.getElementById("drybackValue").innerText=a.dryback.grams!=null?roundNum(a.dryback.grams)+" g / "+roundNum(a.dryback.percent||0)+"%":"--";
     document.getElementById("timeSinceIrr").innerText=a.timeSinceIrr!=null?formatDuration(a.timeSinceIrr):"--";
-    document.getElementById("lastHourGh").innerText=a.lastHourGh!=null?roundNum(a.lastHourGh)+" g/h":"--";
-    document.getElementById("avgDayGh").innerText=a.avgOn!=null?roundNum(a.avgOn)+" g/h":"--";
-    document.getElementById("avgNightGh").innerText=a.avgOff!=null?roundNum(a.avgOff)+" g/h":"--";
+
+    // g/h + % of water at saturation per hour
+    function ghPct(gh) {
+      if(gh==null) return "--";
+      const pct = waterAtSatForPct!=null&&waterAtSatForPct>0 ? (gh/waterAtSatForPct*100) : null;
+      return roundNum(gh)+" g/h" + (pct!=null?" / "+pct.toFixed(1)+"%/h":"");
+    }
+    document.getElementById("lastHourGh").innerText=ghPct(a.lastHourGh);
+    document.getElementById("avgDayGh").innerText=ghPct(a.avgOn);
+    document.getElementById("avgNightGh").innerText=ghPct(a.avgOff);
+
     document.getElementById("lastSaturation").innerText=a.activeSat!=null?roundNum(a.activeSat)+" g":"--";
-    document.getElementById("distanceToTarget").innerText=a.distanceToTarget!=null?roundNum(a.distanceToTarget)+" g":"--";
-    document.getElementById("lastIrrAmount").innerText=a.lastIrr?.irrigationAmount!=null?"+"+roundNum(a.lastIrr.irrigationAmount)+" g":"--";
+
+    // Distance to target + %
+    if(a.distanceToTarget!=null) {
+      const dtPct = waterAtSatForPct!=null&&waterAtSatForPct>0 ? (a.distanceToTarget/waterAtSatForPct*100) : null;
+      document.getElementById("distanceToTarget").innerText = roundNum(a.distanceToTarget)+"g" + (dtPct!=null?" / "+dtPct.toFixed(1)+"%":"");
+    } else {
+      document.getElementById("distanceToTarget").innerText = "--";
+    }
+
+    // Last irrigation amount + % לפי טבלת Athena (נפח עציץ)
+    if(a.lastIrr?.irrigationAmount!=null) {
+      const irrAthenaPct = (a.lastIrr.irrigationAmount / ML_PER_PCT).toFixed(1);
+      document.getElementById("lastIrrAmount").innerText = "+"+roundNum(a.lastIrr.irrigationAmount)+"g / "+irrAthenaPct+"% shot";
+    } else {
+      document.getElementById("lastIrrAmount").innerText = "--";
+    }
     const lastFlush=a.flushEvents?.length?a.flushEvents[a.flushEvents.length-1]:null;
     const lastIrrTime=a.lastIrr?a.lastIrr.triggerTime.getTime():0;
     const lastFlushTime=lastFlush?lastFlush.startTime.getTime():0;
@@ -455,15 +512,43 @@
   }};
 
   const irrigationLinePlugin={id:"irrigationLinePlugin",afterDatasetsDraw(ci){
-    if(currentGraphMode!=="dryback")return;
     const markers=ci.options.plugins.irrigationLinePlugin?.markers||[];
     const{ctx,chartArea,scales:{x}}=ci;if(!x||!chartArea)return;ctx.save();
-    markers.forEach((isMarker,i)=>{
-      if(!isMarker)return;const px=x.getPixelForValue(i);
-      ctx.beginPath();ctx.moveTo(px,chartArea.top);ctx.lineTo(px,chartArea.bottom);
-      ctx.strokeStyle="rgba(107,245,161,0.7)";ctx.lineWidth=2;ctx.setLineDash([5,4]);ctx.stroke();ctx.setLineDash([]);
-      ctx.fillStyle="#6bf5a1";ctx.font="bold 11px Arial";ctx.textAlign="center";ctx.fillText("💧",px,chartArea.top+14);
-    });ctx.restore();
+    if(currentGraphMode==="normal"){
+      // Normal mode: קו עדין + משולש קטן + שעה בראש
+      const timestamps=ci.options.plugins.dayNightPlugin?.timestamps||[];
+      const evtMap=ci.options.plugins.irrigationLinePlugin?.eventTimes||[];
+      markers.forEach((isMarker,i)=>{
+        if(!isMarker)return;
+        const px=x.getPixelForValue(i);
+        // קו מקוקו עדין
+        ctx.beginPath();ctx.moveTo(px,chartArea.top+12);ctx.lineTo(px,chartArea.bottom);
+        ctx.strokeStyle="rgba(107,245,161,0.2)";ctx.lineWidth=1;ctx.setLineDash([3,6]);ctx.stroke();ctx.setLineDash([]);
+        // משולש קטן בראש
+        const tw=5,th=6,ty=chartArea.top+14;
+        ctx.beginPath();
+        ctx.moveTo(px,ty+th);ctx.lineTo(px-tw,ty);ctx.lineTo(px+tw,ty);
+        ctx.closePath();ctx.fillStyle="#6bf5a1";ctx.fill();
+        // שעה מעל המשולש
+        const label=evtMap[i]||"";
+        if(label){
+          ctx.font="10px Arial";ctx.textAlign="center";
+          ctx.fillStyle="rgba(0,0,0,0.7)";
+          ctx.fillText(label,px,chartArea.top+10);
+          ctx.fillStyle="#6bf5a1";
+          ctx.fillText(label,px,chartArea.top+9);
+        }
+      });
+    } else {
+      // Dryback mode: קו יותר בולט + 💧
+      markers.forEach((isMarker,i)=>{
+        if(!isMarker)return;const px=x.getPixelForValue(i);
+        ctx.beginPath();ctx.moveTo(px,chartArea.top);ctx.lineTo(px,chartArea.bottom);
+        ctx.strokeStyle="rgba(107,245,161,0.7)";ctx.lineWidth=2;ctx.setLineDash([5,4]);ctx.stroke();ctx.setLineDash([]);
+        ctx.fillStyle="#6bf5a1";ctx.font="bold 11px Arial";ctx.textAlign="center";ctx.fillText("💧",px,chartArea.top+14);
+      });
+    }
+    ctx.restore();
   }};
 
   const flushZonePlugin={id:"flushZonePlugin",beforeDatasetsDraw(ci){
@@ -478,45 +563,38 @@
     });ctx.restore();
   }};
 
-  // ── Saturation star plugin: draws ★ directly on canvas at (stableTime, stableWeight) ──
+  // ── Saturation line plugin: draws horizontal dashed red line at highest saturation ──
   const saturationPlugin = {id:"saturationPlugin", afterDatasetsDraw(ci) {
     if(currentGraphMode !== "normal") return;
     const pts = ci.options.plugins.saturationPlugin?.points || [];
     if(!pts.length) return;
-    const{ctx, chartArea, scales:{x, y}} = ci;
-    if(!x || !y || !chartArea) return;
-    const timestamps = ci.options.plugins.dayNightPlugin?.timestamps || [];
-    if(!timestamps.length) return;
+    const{ctx, chartArea, scales:{y}} = ci;
+    if(!y || !chartArea) return;
+
+    // מציאת הרוויה הגבוהה ביותר מכל הנקודות
+    const maxSat = Math.max(...pts.map(p => p.weight));
+    if(!maxSat) return;
+
+    const py = y.getPixelForValue(maxSat);
+    if(py < chartArea.top || py > chartArea.bottom) return;
+
     ctx.save();
-    pts.forEach(({timeMs, weight}) => {
-      // Find the nearest index in timestamps
-      let bestIdx = -1, bestDist = Infinity;
-      for(let i = 0; i < timestamps.length; i++) {
-        const d = Math.abs(timestamps[i] - timeMs);
-        if(d < bestDist) { bestDist = d; bestIdx = i; }
-      }
-      if(bestIdx < 0) return;
-      const px = x.getPixelForValue(bestIdx);
-      const py = y.getPixelForValue(weight);
-      if(px < chartArea.left || px > chartArea.right) return;
-      if(py < chartArea.top  || py > chartArea.bottom) return;
-      // Draw star
-      const r = 8, spikes = 5, innerR = 3.5;
-      ctx.beginPath();
-      for(let i = 0; i < spikes * 2; i++) {
-        const angle = (i * Math.PI / spikes) - Math.PI / 2;
-        const rad   = i % 2 === 0 ? r : innerR;
-        const sx    = px + Math.cos(angle) * rad;
-        const sy    = py + Math.sin(angle) * rad;
-        i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
-      }
-      ctx.closePath();
-      ctx.fillStyle   = "#ffe066";
-      ctx.strokeStyle = "#000";
-      ctx.lineWidth   = 1.5;
-      ctx.fill();
-      ctx.stroke();
-    });
+    // קו אדום מקוקו לאורך כל הגרף
+    ctx.beginPath();
+    ctx.moveTo(chartArea.left, py);
+    ctx.lineTo(chartArea.right, py);
+    ctx.strokeStyle = "rgba(255, 80, 80, 0.7)";
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([6, 5]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // תווית בצד שמאל
+    ctx.font      = "bold 10px Arial";
+    ctx.fillStyle = "rgba(255, 80, 80, 0.9)";
+    ctx.textAlign = "left";
+    ctx.fillText("SAT " + Math.round(maxSat) + "g", chartArea.left + 4, py - 4);
+
     ctx.restore();
   }};
 
@@ -594,15 +672,6 @@
           backgroundColor:"rgba(77,163,255,0.12)",
           borderWidth:2,fill:true,tension:0.25,
           pointRadius:0,pointHitRadius:12
-        },
-        {
-          label:"Irrigation",
-          data:analysis.irrigationMarkers,
-          showLine:false,
-          pointRadius:6,pointHoverRadius:7,
-          pointStyle:"triangle",pointRotation:180,
-          pointBackgroundColor:"#6bf5a1",
-          pointBorderColor:"#000",pointBorderWidth:1.5
         }
       ];
     } else {
@@ -618,7 +687,18 @@
         dayNightPlugin:{timestamps:currentChartTimestamps},
         flushZonePlugin:{zones:(analysis.flushEvents||[]).map(f=>({startMs:f.startTime.getTime(),endMs:f.endTime.getTime()}))},
         saturationPlugin:{points:currentGraphMode==="normal"?(analysis.saturationPoints||[]):[]},
-        irrigationLinePlugin:{markers:currentGraphMode==="dryback"?irrigationFlags:[]},
+        irrigationLinePlugin:{markers:irrigationFlags,eventTimes:(()=>{
+          const map={};
+          (analysis.fullEvents||[]).forEach(ev=>{
+            let best=-1,bd=Infinity;
+            for(let i=0;i<(selectedPoints||[]).length;i++){
+              const d=Math.abs(selectedPoints[i].time.getTime()-ev.triggerTime.getTime());
+              if(d<bd){bd=d;best=i;}
+            }
+            if(best>=0&&bd<3*60*1000) map[best]=new Date(ev.triggerTime).toLocaleString("en-US",{timeZone:THAILAND_TIMEZONE,hour:"2-digit",minute:"2-digit",hour12:false});
+          });
+          return map;
+        })()},
         tooltip:{backgroundColor:"rgba(0,0,0,0.55)",titleColor:"#fff",bodyColor:"rgba(255,255,255,0.85)",events:["click","touchstart"],callbacks:{
           title(items){
             const idx=items[0]?.dataIndex;if(idx==null)return"";
@@ -626,6 +706,8 @@
             return new Date(ts).toLocaleString("en-US",{timeZone:THAILAND_TIMEZONE,month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false});
           },
           label(context){
+            // רק dataset ראשון (Weight) מציג נתונים — שאר ה-datasets מוסתרים מהטולטיפ
+            if(context.datasetIndex !== 0) return null;
             const idx=context.dataIndex,p=selectedPoints[idx];if(!p)return null;
             if(currentGraphMode==="dryback"){
               const val=context.raw;if(val==null)return null;
@@ -634,9 +716,10 @@
               const lines=["Dryback: "+parseFloat(val).toFixed(1)+"%"];if(grams!=null)lines.push(grams+" g lost");return lines;
             }
             const sat=getActiveSat(p,analysis.fullEvents);
-            const db=sat?getDryback(p.value,sat.stableWeight):{grams:null,percent:null};
+            const db=sat?getDryback(p.value,sat.stableWeight,analysis.dynamicDryWeight):{grams:null,percent:null};
             const lines=[roundNum(p.value)+" g"];
-            if(db.grams!=null)lines.push("Dryback: "+roundNum(db.grams)+"g / "+roundNum(db.percent)+"%");return lines;
+            if(db.grams!=null)lines.push("Dryback: "+roundNum(db.grams)+"g / "+roundNum(db.percent)+"%");
+            return lines;
           }
         }}
       },
@@ -664,7 +747,6 @@
       }
       const targetIdx = snapIdx >= 0 ? snapIdx : clickedIdx;
       const activeEls = [{datasetIndex:0, index:targetIdx}];
-      if (currentGraphMode === 'normal' && snapIdx >= 0) activeEls.push({datasetIndex:1, index:targetIdx});
       chart.tooltip.setActiveElements(activeEls, {x, y:0});
       chart.update('none');
       if (evt.cancelable) evt.preventDefault();
@@ -686,7 +768,6 @@
       }
       const targetIdx = snapIdx >= 0 ? snapIdx : clickedIdx;
       const activeEls = [{datasetIndex:0, index:targetIdx}];
-      if (currentGraphMode === 'normal' && snapIdx >= 0) activeEls.push({datasetIndex:1, index:targetIdx});
       chart.tooltip.setActiveElements(activeEls, {x, y:0});
       chart.update('none');
       evt.preventDefault();
@@ -745,7 +826,7 @@
   }
 
   function setActive(id){
-    ["btnDay","btnNight","btn6","btn12","btn24","btn168","btn720"].forEach(i=>document.getElementById(i).classList.remove("active"));
+    ["btnDay","btnNight","btn1","btn6","btn12","btn24","btn168"].forEach(i=>document.getElementById(i).classList.remove("active"));
     document.getElementById(id).classList.add("active");
   }
 
@@ -780,7 +861,7 @@
 
   function setRange(hours){
     currentRange=hours;currentRangeMode=null;setActive("btn"+hours);
-    const titles={6:"Last 6 Hours",12:"Last 12 Hours",24:"Last 24 Hours",168:"Last 7 Days",720:"Last 30 Days"};
+    const titles={1:"Last 1 Hour",6:"Last 6 Hours",12:"Last 12 Hours",24:"Last 24 Hours",168:"Last 7 Days"};
     document.getElementById("title").innerText=titles[hours]||"Last "+hours+" Hours";
     fetchData(hours);
   }
@@ -804,6 +885,6 @@
   },60000);
 </script>
 
-  <div style="text-align:center;color:rgba(255,255,255,0.2);font-size:11px;padding:10px;">v 13/04/2026 11:10</div>
+  <div style="text-align:center;color:rgba(255,255,255,0.2);font-size:11px;padding:10px;">v 14/04/2026 17:10</div>
 </body>
 </html>
