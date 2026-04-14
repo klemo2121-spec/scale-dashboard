@@ -6,7 +6,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Scale Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
   <style>
     body { margin:0; font-family:Arial,sans-serif; background:#000; color:#fff; text-align:center; }
     .container { width:100%; max-width:100%; margin:0 auto; padding:10px 8px 30px; box-sizing:border-box; }
@@ -34,7 +33,6 @@
       .mini-stat .mini-value{font-size:21px;}
     }
   </style>
-
 </head>
 <body>
 <div class="container">
@@ -76,34 +74,36 @@
       <button id="modeDryback" onclick="setGraphMode('dryback')">Dry Back</button>
     </div>
     <div id="lightsBtn" style="margin:10px auto 0;display:inline-block;padding:8px 24px;border-radius:16px;font-size:14px;font-weight:700;"></div>
-
-```
-<div class="chart-wrap">
-  <div class="canvas-holder"><canvas id="chart"></canvas></div>
-</div>
-<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding:0 4px;">
-  <div style="display:flex;gap:6px;">
-    <button onclick="panChart(-0.25)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">◀</button>
-    <button onclick="panChart(0.25)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">▶</button>
-  </div>
-  <div style="display:flex;gap:6px;">
-    <button onclick="zoomChart(0.5)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">+</button>
-    <button onclick="zoomChart(2)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">−</button>
-    <button onclick="resetZoom()" style="background:#333;font-size:12px;padding:6px 12px;min-width:0;border-radius:12px;">Reset</button>
-    <button onclick="openFullscreen()" style="background:#333;font-size:14px;padding:6px 12px;min-width:0;border-radius:12px;">⛶</button>
-  </div>
-</div>
-<div class="actions">
-  <button id="btn6" onclick="setRange(6)">6 Hours</button>
-  <button id="btn12" onclick="setRange(12)">12 Hours</button>
-  <button id="btn24" class="active" onclick="setRange(24)">24 Hours</button>
-  <button id="btn168" onclick="setRange(168)">7 Days</button>
-  <button id="btn720" onclick="setRange(720)">30 Days</button>
-  <button id="btnDay" onclick="setRangeMode('day')">Last Day</button>
-  <button id="btnNight" onclick="setRangeMode('night')">Last Night</button>
-</div>
-```
-
+    <div class="chart-wrap">
+      <div class="canvas-holder"><canvas id="chart"></canvas></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding:0 4px;">
+      <div style="display:flex;gap:6px;">
+        <button onclick="panChart(-0.25)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">◀</button>
+        <button onclick="panChart(0.25)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">▶</button>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <button onclick="zoomChart(0.5)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">+</button>
+        <button onclick="zoomChart(2)" style="background:#333;font-size:16px;padding:6px 14px;min-width:0;border-radius:12px;">−</button>
+        <button onclick="resetZoom()" style="background:#333;font-size:12px;padding:6px 12px;min-width:0;border-radius:12px;">Reset</button>
+        <button onclick="openFullscreen()" style="background:#333;font-size:14px;padding:6px 12px;min-width:0;border-radius:12px;">⛶</button>
+      </div>
+    </div>
+    <!-- Legend -->
+    <div class="legend-row" style="margin-top:12px;">
+      <span><span class="legend-dot" style="background:#4da3ff;"></span>Weight</span>
+      <span><span style="font-size:13px;">▼</span> <span style="color:#6bf5a1;">Irrigation</span></span>
+      <span><span style="font-size:13px;">★</span> <span style="color:#ffe066;">Saturation</span></span>
+    </div>
+    <div class="actions">
+      <button id="btn6" onclick="setRange(6)">6 Hours</button>
+      <button id="btn12" onclick="setRange(12)">12 Hours</button>
+      <button id="btn24" class="active" onclick="setRange(24)">24 Hours</button>
+      <button id="btn168" onclick="setRange(168)">7 Days</button>
+      <button id="btn720" onclick="setRange(720)">30 Days</button>
+      <button id="btnDay" onclick="setRangeMode('day')">Last Day</button>
+      <button id="btnNight" onclick="setRangeMode('night')">Last Night</button>
+    </div>
   </div>
 </div>
 
@@ -122,8 +122,13 @@
   const MAX_VALID_RATE_GH = 150;
   const MIN_SEGMENT_LOSS_G = 0.5;
   const MAX_DRYBACK_PCT = 40;
-  const DRY_WEIGHT_G = 1200; // pot + dry coco + plant (no water)
-  const IRRIGATION_TIME_CORRECTION_MS = 10 * 60 * 1000; // subtract 10 min from detected time
+  const DRY_WEIGHT_G = 1200;
+  const IRRIGATION_TIME_CORRECTION_MS = 10 * 60 * 1000;
+
+  // ── NEW: low-weight filter constants ──────────────────────────────────────
+  const MIN_VALID_WEIGHT_G = 200;        // readings below this are junk
+  const LOW_WEIGHT_LOCKOUT_MS = 5 * 60 * 1000; // ignore 5 min after junk reading
+  // ─────────────────────────────────────────────────────────────────────────
 
   let chart = null, currentRange = 24, currentRangeMode = null;
   let currentWeightLive = null, currentGraphMode = "normal";
@@ -150,6 +155,23 @@
       const sl=values.slice(s,e+1); return sl.reduce((a,b)=>a+b,0)/sl.length;
     });
   }
+
+  // ── NEW: filter readings below MIN_VALID_WEIGHT_G and lock out 5 min after ──
+  function filterLowWeight(points) {
+    const filtered = [];
+    let lockoutUntil = 0;
+    for (const p of points) {
+      if (p.value < MIN_VALID_WEIGHT_G) {
+        // bad reading – extend lockout
+        lockoutUntil = Math.max(lockoutUntil, p.time.getTime() + LOW_WEIGHT_LOCKOUT_MS);
+        continue;
+      }
+      if (p.time.getTime() < lockoutUntil) continue; // still inside lockout window
+      filtered.push(p);
+    }
+    return filtered;
+  }
+  // ──────────────────────────────────────────────────────────────────────────
 
   function removeOutliers(points) {
     if(points.length<3) return points;
@@ -178,10 +200,9 @@
       const jump=points[i].value-points[i-1].value;
       if(jump<IRRIGATION_JUMP_THRESHOLD){i++;continue;}
       const triggerIndex=i, weightBeforeJump=points[i-1].value, triggerTime=points[i].time;
-      // Skip if weight was dropping sharply before the jump (pot movement, not irrigation)
       if(i>=3){
-        const prevDrop=points[i-1].value-points[i-3].value; // should be small or positive if irrigation
-        if(prevDrop < -30) { i++; continue; } // was dropping > 30g in 2 readings before jump = not irrigation
+        const prevDrop=points[i-1].value-points[i-3].value;
+        if(prevDrop < -30) { i++; continue; }
       }
       let peakWeight=points[i].value, peakIndex=i, j=i+1;
       while(j<points.length){
@@ -208,9 +229,8 @@
       } else if(candidates.length===1){
         stableWeight=candidates[0].value; stableIndex=candidates[0].index; stableTime=candidates[0].time;
       }
-      const excludeEnd=stableTime.getTime()+60*1000; // 1 min after stable
+      const excludeEnd=stableTime.getTime()+60*1000;
       events.push({triggerIndex,triggerTime,weightBeforeJump,peakWeight,peakIndex,stableIndex,stableWeight,stableTime,irrigationAmount,excludeStart:triggerTime.getTime(),excludeEnd});
-      // 20-minute lockout after trigger
       const lockoutEnd=triggerTime.getTime()+20*60*1000;
       while(i<points.length&&points[i].time.getTime()<lockoutEnd) i++;
     }
@@ -218,7 +238,7 @@
   }
 
   function detectFlushEvents(irrigationEvents, points) {
-    const FLUSH_MULTI_WINDOW_MS=10*60*1000, FLUSH_MULTI_COUNT=3, FLUSH_DURATION_MS=60*1000;
+    const FLUSH_MULTI_WINDOW_MS=10*60*1000, FLUSH_MULTI_COUNT=3;
     const flushGroups=new Set();
     for(let i=0;i<irrigationEvents.length;i++){
       const group=[i];
@@ -228,7 +248,6 @@
       }
       if(group.length>=FLUSH_MULTI_COUNT) group.forEach(idx=>flushGroups.add(idx));
     }
-    // Duration-based flush detection removed - only use multi-irrigation detection
     if(!flushGroups.size) return [];
     const sortedIdxs=[...flushGroups].sort((a,b)=>a-b);
     const flushEvents=[]; let gStart=sortedIdxs[0], gEnd=sortedIdxs[0];
@@ -243,7 +262,6 @@
   }
 
   function isExcluded(timeMs,fullEvents){for(const ev of fullEvents){if(timeMs>=ev.excludeStart&&timeMs<=ev.excludeEnd)return true;}return false;}
-
   function getActiveSat(point,fullEvents){let active=null;for(const ev of fullEvents){if(ev.stableTime.getTime()<=point.time.getTime())active=ev;else break;}return active;}
 
   function splitSegments(points,fullEvents){
@@ -349,10 +367,11 @@
     const lastIrr=fullEvents.length?fullEvents[fullEvents.length-1]:null;
     const activeSat=lastIrr?lastIrr.stableWeight:null;
     const dryback=getDryback(baseWeight,activeSat);
-    // Time since irrigation: subtract correction to account for detection lag
     const timeSinceIrr=lastIrr?Date.now()-lastIrr.triggerTime.getTime():null;
     const lastHourGh=computeLastHourGh(allPoints,fullEvents);
     const{avgOn,avgOff}=computeAvgByLights24h(allPoints,fullEvents);
+
+    // Irrigation markers (triangle ▼ at trigger point)
     const irrigationMarkers=new Array(selectedPoints.length).fill(null);
     for(const ev of fullEvents){
       let bestIdx=-1, bestDist=Infinity;
@@ -360,18 +379,40 @@
         const dist=Math.abs(selectedPoints[i].time.getTime()-ev.triggerTime.getTime());
         if(dist<bestDist){bestDist=dist;bestIdx=i;}
       }
-      // Only show marker if trigger is within the selected time range (not outside)
       if(bestIdx>=0 && bestDist<3*60*1000) irrigationMarkers[bestIdx]=selectedPoints[bestIdx].value;
     }
+
+    // ── Saturation points for canvas plugin ──────────────────────────────
+    // Only include stableTime values that actually fall inside the viewed window.
+    // Also deduplicate flush groups: if two saturation points are within 20 min
+    // of each other, keep only the LAST one (end of flush).
+    const FLUSH_MERGE_MS = 20 * 60 * 1000;
+    const windowStart = selectedPoints.length ? selectedPoints[0].time.getTime() : 0;
+    const windowEnd   = selectedPoints.length ? selectedPoints[selectedPoints.length-1].time.getTime() : 0;
+    const rawSatPts = fullEvents
+      .filter(ev => {
+        const ms = ev.stableTime.getTime();
+        return ms >= windowStart && ms <= windowEnd;
+      })
+      .map(ev => ({ timeMs: ev.stableTime.getTime(), weight: ev.stableWeight }));
+    // Deduplicate: remove any point that is followed within FLUSH_MERGE_MS by another point
+    const saturationPoints = rawSatPts.filter((pt, i) => {
+      if (i < rawSatPts.length - 1) {
+        const nextMs = rawSatPts[i + 1].timeMs;
+        if (nextMs - pt.timeMs < FLUSH_MERGE_MS) return false; // skip — next one is the real end
+      }
+      return true;
+    });
+    // ─────────────────────────────────────────────────────────────────────
+
     const drybackSeries=buildDrybackPct(selectedPoints,fullEvents);
     const now=new Date();
     const targetPct=isLightsOn(now)?DAY_DRYBACK_TARGET:NIGHT_DRYBACK_TARGET;
-    // Target weight = dry weight + remaining water at target dryback %
     const waterAtSat=activeSat!=null?activeSat-DRY_WEIGHT_G:null;
     const targetWeight=waterAtSat!=null&&waterAtSat>0
       ?DRY_WEIGHT_G+(waterAtSat*(1-targetPct)):null;
     const distanceToTarget=targetWeight!=null&&baseWeight!=null?Math.max(0,baseWeight-targetWeight):null;
-    return{fullEvents,flushEvents,minVal,maxVal,rangeVal,rangePercent,dryback,activeSat,lastIrr,timeSinceIrr,lastHourGh,avgOn,avgOff,irrigationMarkers,drybackSeries,targetWeight,distanceToTarget};
+    return{fullEvents,flushEvents,minVal,maxVal,rangeVal,rangePercent,dryback,activeSat,lastIrr,timeSinceIrr,lastHourGh,avgOn,avgOff,irrigationMarkers,saturationPoints,drybackSeries,targetWeight,distanceToTarget};
   }
 
   function updateStats(a){
@@ -395,7 +436,6 @@
     if(lastFlush&&lastFlushTime>=lastIrrTime-60000){evTypeEl.innerText="🚿 Flush";evTypeEl.style.color="#5af";}
     else if(a.lastIrr){evTypeEl.innerText="💧 Irrigation";evTypeEl.style.color="#6bf5a1";}
     else{evTypeEl.innerText="--";evTypeEl.style.color="#fff";}
-    // Show corrected time (-10 min)
     if(a.lastIrr&&a.lastIrr.triggerTime){
       const correctedMs=a.lastIrr.triggerTime.getTime();
       evTimeEl.innerText=new Date(correctedMs).toLocaleString("en-US",{timeZone:THAILAND_TIMEZONE,hour:"2-digit",minute:"2-digit",hour12:false});
@@ -438,9 +478,50 @@
     });ctx.restore();
   }};
 
-  Chart.register(dayNightPlugin,irrigationLinePlugin,flushZonePlugin);
+  // ── Saturation star plugin: draws ★ directly on canvas at (stableTime, stableWeight) ──
+  const saturationPlugin = {id:"saturationPlugin", afterDatasetsDraw(ci) {
+    if(currentGraphMode !== "normal") return;
+    const pts = ci.options.plugins.saturationPlugin?.points || [];
+    if(!pts.length) return;
+    const{ctx, chartArea, scales:{x, y}} = ci;
+    if(!x || !y || !chartArea) return;
+    const timestamps = ci.options.plugins.dayNightPlugin?.timestamps || [];
+    if(!timestamps.length) return;
+    ctx.save();
+    pts.forEach(({timeMs, weight}) => {
+      // Find the nearest index in timestamps
+      let bestIdx = -1, bestDist = Infinity;
+      for(let i = 0; i < timestamps.length; i++) {
+        const d = Math.abs(timestamps[i] - timeMs);
+        if(d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      if(bestIdx < 0) return;
+      const px = x.getPixelForValue(bestIdx);
+      const py = y.getPixelForValue(weight);
+      if(px < chartArea.left || px > chartArea.right) return;
+      if(py < chartArea.top  || py > chartArea.bottom) return;
+      // Draw star
+      const r = 8, spikes = 5, innerR = 3.5;
+      ctx.beginPath();
+      for(let i = 0; i < spikes * 2; i++) {
+        const angle = (i * Math.PI / spikes) - Math.PI / 2;
+        const rad   = i % 2 === 0 ? r : innerR;
+        const sx    = px + Math.cos(angle) * rad;
+        const sy    = py + Math.sin(angle) * rad;
+        i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+      }
+      ctx.closePath();
+      ctx.fillStyle   = "#ffe066";
+      ctx.strokeStyle = "#000";
+      ctx.lineWidth   = 1.5;
+      ctx.fill();
+      ctx.stroke();
+    });
+    ctx.restore();
+  }};
 
-  // Hide tooltip when clicking outside chart
+  Chart.register(dayNightPlugin,irrigationLinePlugin,flushZonePlugin,saturationPlugin);
+
   document.addEventListener('click', function(e) {
     if (!chart) return;
     const canvas = document.getElementById('chart');
@@ -450,9 +531,8 @@
     }
   });
 
-  // Manual zoom - narrows/widens the x-axis range
   let zoomLevel = 1;
-  let zoomCenter = 0.5; // 0-1 position
+  let zoomCenter = 0.5;
 
   function panChart(fraction) {
     if (!chart) return;
@@ -507,8 +587,23 @@
       const smoothed=smoothValues(selectedPoints.map(p=>p.value),(currentRange||24)<=6?2:3);
       bounds=getYAxisBounds(smoothed,"normal");
       datasets=[
-        {label:"Weight",data:smoothed,borderColor:"#4da3ff",backgroundColor:"rgba(77,163,255,0.12)",borderWidth:2,fill:true,tension:0.25,pointRadius:0,pointHitRadius:12},
-        {label:"Irrigation",data:analysis.irrigationMarkers,showLine:false,pointRadius:6,pointHoverRadius:7,pointStyle:"triangle",pointRotation:180,pointBackgroundColor:"#6bf5a1",pointBorderColor:"#000",pointBorderWidth:1.5}
+        {
+          label:"Weight",
+          data:smoothed,
+          borderColor:"#4da3ff",
+          backgroundColor:"rgba(77,163,255,0.12)",
+          borderWidth:2,fill:true,tension:0.25,
+          pointRadius:0,pointHitRadius:12
+        },
+        {
+          label:"Irrigation",
+          data:analysis.irrigationMarkers,
+          showLine:false,
+          pointRadius:6,pointHoverRadius:7,
+          pointStyle:"triangle",pointRotation:180,
+          pointBackgroundColor:"#6bf5a1",
+          pointBorderColor:"#000",pointBorderWidth:1.5
+        }
       ];
     } else {
       const drybackVals=analysis.drybackSeries.map(v=>v!=null?parseFloat(v.toFixed(1)):null);
@@ -516,13 +611,13 @@
       datasets=[{label:"Dryback %",data:drybackVals,borderColor:"#ff5a5a",backgroundColor:"rgba(255,90,90,0.12)",borderWidth:2,fill:true,tension:0.2,pointRadius:0,pointHitRadius:12,spanGaps:true}];
     }
     chart=new Chart(ctx,{type:"line",data:{labels,datasets},options:{
-
       responsive:true,maintainAspectRatio:false,animation:false,interaction:{mode:"index",intersect:false},
       layout:{padding:{left:8,right:8,top:6,bottom:0}},
       plugins:{
         legend:{display:false},
         dayNightPlugin:{timestamps:currentChartTimestamps},
         flushZonePlugin:{zones:(analysis.flushEvents||[]).map(f=>({startMs:f.startTime.getTime(),endMs:f.endTime.getTime()}))},
+        saturationPlugin:{points:currentGraphMode==="normal"?(analysis.saturationPoints||[]):[]},
         irrigationLinePlugin:{markers:currentGraphMode==="dryback"?irrigationFlags:[]},
         tooltip:{backgroundColor:"rgba(0,0,0,0.55)",titleColor:"#fff",bodyColor:"rgba(255,255,255,0.85)",events:["click","touchstart"],callbacks:{
           title(items){
@@ -551,20 +646,15 @@
       }
     }});
 
-    // Snap to irrigation on click/touch
     const canvasEl = document.getElementById('chart');
     function handleChartClick(evt) {
       if (!chart) return;
-      // Get x position
       const rect = canvasEl.getBoundingClientRect();
       const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
       const x = clientX - rect.left;
-      // Find nearest data point
       const xScale = chart.scales.x;
       let clickedIdx = Math.round(xScale.getValueForPixel(x));
       clickedIdx = Math.max(0, Math.min(clickedIdx, currentChartTimestamps.length-1));
-
-      // Find nearest irrigation within 30 points
       let snapIdx = -1, minDist = 30;
       for (let i = 0; i < lastAnalysis.analysis.irrigationMarkers.length; i++) {
         if (lastAnalysis.analysis.irrigationMarkers[i] !== null) {
@@ -603,11 +693,17 @@
     }, {passive:false});
   }
 
+  // ── UPDATED fetchData: apply filterLowWeight before removeOutliers ────────
   async function fetchData(hours){
     const url="https://api.thingspeak.com/channels/"+channelID+"/feeds.json?api_key="+apiKey+"&results=8000";
     const res=await fetch(url),data=await res.json();
-    const raw=(data.feeds||[]).map(f=>({time:new Date(f.created_at),value:parseFloat(f.field1)})).filter(p=>!isNaN(p.value)).sort((a,b)=>a.time-b.time);
-    const allPoints=removeOutliers(raw),cutoff=Date.now()-hours*3600000;
+    const raw=(data.feeds||[])
+      .map(f=>({time:new Date(f.created_at),value:parseFloat(f.field1)}))
+      .filter(p=>!isNaN(p.value))
+      .sort((a,b)=>a.time-b.time);
+    const lowFiltered = filterLowWeight(raw);              // ← NEW
+    const allPoints=removeOutliers(lowFiltered);           // ← changed from raw
+    const cutoff=Date.now()-hours*3600000;
     const selectedPoints=allPoints.filter(p=>p.time.getTime()>=cutoff);
     const analysis=analyzeData(allPoints,selectedPoints);
     lastAnalysis={allPoints,selectedPoints,analysis};updateStats(analysis);updateChart(selectedPoints,analysis);
@@ -616,12 +712,17 @@
   async function fetchDataWindow(startMs,endMs){
     const url="https://api.thingspeak.com/channels/"+channelID+"/feeds.json?api_key="+apiKey+"&results=8000";
     const res=await fetch(url),data=await res.json();
-    const raw=(data.feeds||[]).map(f=>({time:new Date(f.created_at),value:parseFloat(f.field1)})).filter(p=>!isNaN(p.value)).sort((a,b)=>a.time-b.time);
-    const allPoints=removeOutliers(raw);
+    const raw=(data.feeds||[])
+      .map(f=>({time:new Date(f.created_at),value:parseFloat(f.field1)}))
+      .filter(p=>!isNaN(p.value))
+      .sort((a,b)=>a.time-b.time);
+    const lowFiltered = filterLowWeight(raw);              // ← NEW
+    const allPoints=removeOutliers(lowFiltered);           // ← changed from raw
     const selectedPoints=allPoints.filter(p=>p.time.getTime()>=startMs&&p.time.getTime()<=endMs);
     const analysis=analyzeData(allPoints,selectedPoints);
     lastAnalysis={allPoints,selectedPoints,analysis};updateStats(analysis);updateChart(selectedPoints,analysis);
   }
+  // ─────────────────────────────────────────────────────────────────────────
 
   function updateLightsBtn() {
     const el = document.getElementById("lightsBtn");
@@ -703,6 +804,6 @@
   },60000);
 </script>
 
-  <div style="text-align:center;color:rgba(255,255,255,0.2);font-size:11px;padding:10px;">v 13/04/2026 06:25</div>
+  <div style="text-align:center;color:rgba(255,255,255,0.2);font-size:11px;padding:10px;">v 13/04/2026 11:10</div>
 </body>
 </html>
