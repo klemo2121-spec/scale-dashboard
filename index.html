@@ -89,7 +89,6 @@
         <button onclick="openFullscreen()" style="background:#333;font-size:14px;padding:6px 12px;min-width:0;border-radius:12px;">⛶</button>
       </div>
     </div>
-    <!-- Legend -->
     <div class="legend-row" style="margin-top:12px;">
       <span><span class="legend-dot" style="background:#4da3ff;"></span>Weight</span>
       <span><span style="font-size:13px;">▼</span> <span style="color:#6bf5a1;">Irrigation</span></span>
@@ -111,6 +110,7 @@
   const channelID = 3336368;
   const apiKey = "ZURDVTF2AB34F5Y6";
   const firebaseWeightUrl = "https://scale-dashboard-91574-default-rtdb.asia-southeast1.firebasedatabase.app/weight.json";
+  const firebaseHistoryUrl = "https://scale-dashboard-91574-default-rtdb.asia-southeast1.firebasedatabase.app/history";
   const THAILAND_TIMEZONE = "Asia/Bangkok";
   const LIGHTS_ON_START = 21;
   const LIGHTS_ON_END = 9;
@@ -122,16 +122,14 @@
   const MAX_VALID_RATE_GH = 150;
   const MIN_SEGMENT_LOSS_G = 0.5;
   const MAX_DRYBACK_PCT = 40;
-  const POT_DRY_G   = 1200;  // עציץ + קוקו יבש (גרם) — לעדכן עם משקל חדש
-  const WATER_AT_FC = 950;   // מים בקוקו ב-field capacity — הנחה! לעדכן עם משקל חדש
-  const POT_SIZE_LITERS = 2.0;          // נפח העציץ בליטר
-  const ML_PER_PCT = POT_SIZE_LITERS * 10; // 1% = 20ml לעציץ 2L
+  const POT_DRY_G   = 1200;
+  const WATER_AT_FC = 950;
+  const POT_SIZE_LITERS = 3.0;
+  const ML_PER_PCT = POT_SIZE_LITERS * 10;
   const IRRIGATION_TIME_CORRECTION_MS = 10 * 60 * 1000;
 
-  // ── NEW: low-weight filter constants ──────────────────────────────────────
-  const MIN_VALID_WEIGHT_G = 200;        // readings below this are junk
-  const LOW_WEIGHT_LOCKOUT_MS = 5 * 60 * 1000; // ignore 5 min after junk reading
-  // ─────────────────────────────────────────────────────────────────────────
+  const MIN_VALID_WEIGHT_G = 200;
+  const LOW_WEIGHT_LOCKOUT_MS = 5 * 60 * 1000;
 
   let chart = null, currentRange = 24, currentRangeMode = null;
   let currentWeightLive = null, currentGraphMode = "normal";
@@ -159,22 +157,42 @@
     });
   }
 
-  // ── NEW: filter readings below MIN_VALID_WEIGHT_G and lock out 5 min after ──
+  const DROP_THRESHOLD_G = 50;
+  const DROP_LOCKOUT_MS  = 3 * 60 * 1000;
+
   function filterLowWeight(points) {
-    const filtered = [];
+    let filtered = [];
     let lockoutUntil = 0;
     for (const p of points) {
       if (p.value < MIN_VALID_WEIGHT_G) {
-        // bad reading – extend lockout
         lockoutUntil = Math.max(lockoutUntil, p.time.getTime() + LOW_WEIGHT_LOCKOUT_MS);
         continue;
       }
-      if (p.time.getTime() < lockoutUntil) continue; // still inside lockout window
+      if (p.time.getTime() < lockoutUntil) continue;
       filtered.push(p);
     }
-    return filtered;
+
+    const clean = [];
+    let i = 0;
+    while (i < filtered.length) {
+      if (i >= 2 && i < filtered.length - 1) {
+        const prev  = filtered[i-1].value;
+        const curr  = filtered[i].value;
+        const next  = filtered[i+1].value;
+        const drop  = prev - curr;
+        const recovery = next - curr;
+        if (drop > DROP_THRESHOLD_G && recovery > DROP_THRESHOLD_G * 0.5) {
+          let j = i;
+          while (j < filtered.length && filtered[j].value < prev - DROP_THRESHOLD_G * 0.5) j++;
+          i = j;
+          continue;
+        }
+      }
+      clean.push(filtered[i]);
+      i++;
+    }
+    return clean;
   }
-  // ──────────────────────────────────────────────────────────────────────────
 
   function removeOutliers(points) {
     if(points.length<3) return points;
@@ -207,9 +225,6 @@
         const prevDrop=points[i-1].value-points[i-3].value;
         if(prevDrop < -30) { i++; continue; }
       }
-      // ── סינון bounce: ירידה ואז עלייה = רעש סנסור, לא השקיה ──
-      // Pattern: נקודה[i-2]=רגיל → נקודה[i-1]=ירידה → נקודה[i]=עלייה
-      // אם השינוי נטו מ-[i-2] ל-[i] קטן מ-THRESHOLD → זה bounce, לא השקיה
       if(i>=2){
         const dipDrop = points[i-1].value - points[i-2].value;
         const netChange = points[i].value - points[i-2].value;
@@ -217,6 +232,14 @@
           i++; continue;
         }
       }
+      const stableCheckEnd = points[i].time.getTime() + 5 * 60 * 1000;
+      let stableAboveCount = 0;
+      for (let k = i+1; k < points.length; k++) {
+        if (points[k].time.getTime() > stableCheckEnd) break;
+        if (points[k].value >= weightBeforeJump + IRRIGATION_JUMP_THRESHOLD * 0.5) stableAboveCount++;
+      }
+      if (stableAboveCount < 3) { i++; continue; }
+
       let peakWeight=points[i].value, peakIndex=i, j=i+1;
       while(j<points.length){
         const dt=points[j].time.getTime()-points[peakIndex].time.getTime();
@@ -353,7 +376,7 @@
     const waterAtSat=satWeight-dw;
     if(waterAtSat<=0)return{grams,percent:null};
     const percent=(grams/waterAtSat)*100;
-    if(percent>MAX_DRYBACK_PCT)return{grams:null,percent:null};
+    if(percent>MAX_DRYBACK_PCT)return{grams,percent:null};
     return{grams,percent};
   }
 
@@ -371,11 +394,10 @@
     return h===0?m+"m":h+"h "+m%60+"m";
   }
 
-  // DRY_WEIGHT_G דינמי — מתעדכן אוטומטית לפי הרוויה האחרונה
   function getDryWeightG(lastStableWeight) {
     if (!lastStableWeight || lastStableWeight <= 0) return POT_DRY_G;
     const dw = lastStableWeight - WATER_AT_FC;
-    return dw > POT_DRY_G ? dw : POT_DRY_G; // לא פחות מהעציץ הריק
+    return dw > POT_DRY_G ? dw : POT_DRY_G;
   }
 
   function analyzeData(allPoints,selectedPoints){
@@ -388,14 +410,12 @@
     const baseWeight=currentWeightLive??(allPoints.length?allPoints[allPoints.length-1].value:null);
     const lastIrr=fullEvents.length?fullEvents[fullEvents.length-1]:null;
     const activeSat=lastIrr?lastIrr.stableWeight:null;
-    // DRY_WEIGHT_G מתעדכן לפי הרוויה האחרונה
     const dynamicDryWeight = getDryWeightG(activeSat);
     const dryback=getDryback(baseWeight,activeSat,dynamicDryWeight);
     const timeSinceIrr=lastIrr?Date.now()-lastIrr.triggerTime.getTime():null;
     const lastHourGh=computeLastHourGh(allPoints,fullEvents);
     const{avgOn,avgOff}=computeAvgByLights24h(allPoints,fullEvents);
 
-    // Irrigation markers (triangle ▼ at trigger point)
     const irrigationMarkers=new Array(selectedPoints.length).fill(null);
     for(const ev of fullEvents){
       let bestIdx=-1, bestDist=Infinity;
@@ -406,10 +426,6 @@
       if(bestIdx>=0 && bestDist<3*60*1000) irrigationMarkers[bestIdx]=selectedPoints[bestIdx].value;
     }
 
-    // ── Saturation points for canvas plugin ──────────────────────────────
-    // Only include stableTime values that actually fall inside the viewed window.
-    // Also deduplicate flush groups: if two saturation points are within 20 min
-    // of each other, keep only the LAST one (end of flush).
     const FLUSH_MERGE_MS = 20 * 60 * 1000;
     const windowStart = selectedPoints.length ? selectedPoints[0].time.getTime() : 0;
     const windowEnd   = selectedPoints.length ? selectedPoints[selectedPoints.length-1].time.getTime() : 0;
@@ -419,15 +435,13 @@
         return ms >= windowStart && ms <= windowEnd;
       })
       .map(ev => ({ timeMs: ev.stableTime.getTime(), weight: ev.stableWeight }));
-    // Deduplicate: remove any point that is followed within FLUSH_MERGE_MS by another point
     const saturationPoints = rawSatPts.filter((pt, i) => {
       if (i < rawSatPts.length - 1) {
         const nextMs = rawSatPts[i + 1].timeMs;
-        if (nextMs - pt.timeMs < FLUSH_MERGE_MS) return false; // skip — next one is the real end
+        if (nextMs - pt.timeMs < FLUSH_MERGE_MS) return false;
       }
       return true;
     });
-    // ─────────────────────────────────────────────────────────────────────
 
     const drybackSeries=buildDrybackPct(selectedPoints,fullEvents,dynamicDryWeight);
     const now=new Date();
@@ -444,11 +458,9 @@
     document.getElementById("rangeLabel").innerText=rangeMap[currentRange]||"Range";
     document.getElementById("rangeSelected").innerText=a.rangeVal!=null?roundNum(a.rangeVal)+" g / "+roundNum(a.rangePercent||0)+"%":"--";
 
-    // Runoff
     const waterAtSatForPct = a.activeSat!=null ? a.activeSat - (a.dynamicDryWeight??POT_DRY_G) : null;
     if(a.lastIrr && a.lastIrr.peakWeight!=null && a.lastIrr.stableWeight!=null) {
       const runoffG = Math.max(0, a.lastIrr.peakWeight - a.lastIrr.stableWeight);
-      // runoff% = כמה יצא מתוך מה שנכנס
       const runoffPct = a.lastIrr.irrigationAmount>0 ? (runoffG/a.lastIrr.irrigationAmount*100) : null;
       document.getElementById("lastRunoff").innerText = roundNum(runoffG)+"g" + (runoffPct!=null?" / "+roundNum(runoffPct)+"%":"");
     } else {
@@ -458,7 +470,6 @@
     document.getElementById("drybackValue").innerText=a.dryback.grams!=null?roundNum(a.dryback.grams)+" g / "+roundNum(a.dryback.percent||0)+"%":"--";
     document.getElementById("timeSinceIrr").innerText=a.timeSinceIrr!=null?formatDuration(a.timeSinceIrr):"--";
 
-    // g/h + % of water at saturation per hour
     function ghPct(gh) {
       if(gh==null) return "--";
       const pct = waterAtSatForPct!=null&&waterAtSatForPct>0 ? (gh/waterAtSatForPct*100) : null;
@@ -470,7 +481,6 @@
 
     document.getElementById("lastSaturation").innerText=a.activeSat!=null?roundNum(a.activeSat)+" g":"--";
 
-    // Distance to target + %
     if(a.distanceToTarget!=null) {
       const dtPct = waterAtSatForPct!=null&&waterAtSatForPct>0 ? (a.distanceToTarget/waterAtSatForPct*100) : null;
       document.getElementById("distanceToTarget").innerText = roundNum(a.distanceToTarget)+"g" + (dtPct!=null?" / "+dtPct.toFixed(1)+"%":"");
@@ -478,7 +488,6 @@
       document.getElementById("distanceToTarget").innerText = "--";
     }
 
-    // Last irrigation amount + % לפי טבלת Athena (נפח עציץ)
     if(a.lastIrr?.irrigationAmount!=null) {
       const irrAthenaPct = (a.lastIrr.irrigationAmount / ML_PER_PCT).toFixed(1);
       document.getElementById("lastIrrAmount").innerText = "+"+roundNum(a.lastIrr.irrigationAmount)+"g / "+irrAthenaPct+"% shot";
@@ -515,21 +524,17 @@
     const markers=ci.options.plugins.irrigationLinePlugin?.markers||[];
     const{ctx,chartArea,scales:{x}}=ci;if(!x||!chartArea)return;ctx.save();
     if(currentGraphMode==="normal"){
-      // Normal mode: קו עדין + משולש קטן + שעה בראש
       const timestamps=ci.options.plugins.dayNightPlugin?.timestamps||[];
       const evtMap=ci.options.plugins.irrigationLinePlugin?.eventTimes||[];
       markers.forEach((isMarker,i)=>{
         if(!isMarker)return;
         const px=x.getPixelForValue(i);
-        // קו מקוקו עדין
         ctx.beginPath();ctx.moveTo(px,chartArea.top+12);ctx.lineTo(px,chartArea.bottom);
         ctx.strokeStyle="rgba(107,245,161,0.2)";ctx.lineWidth=1;ctx.setLineDash([3,6]);ctx.stroke();ctx.setLineDash([]);
-        // משולש קטן בראש
         const tw=5,th=6,ty=chartArea.top+14;
         ctx.beginPath();
         ctx.moveTo(px,ty+th);ctx.lineTo(px-tw,ty);ctx.lineTo(px+tw,ty);
         ctx.closePath();ctx.fillStyle="#6bf5a1";ctx.fill();
-        // שעה מעל המשולש
         const label=evtMap[i]||"";
         if(label){
           ctx.font="10px Arial";ctx.textAlign="center";
@@ -540,7 +545,6 @@
         }
       });
     } else {
-      // Dryback mode: קו יותר בולט + 💧
       markers.forEach((isMarker,i)=>{
         if(!isMarker)return;const px=x.getPixelForValue(i);
         ctx.beginPath();ctx.moveTo(px,chartArea.top);ctx.lineTo(px,chartArea.bottom);
@@ -563,7 +567,6 @@
     });ctx.restore();
   }};
 
-  // ── Saturation line plugin: draws horizontal dashed red line at highest saturation ──
   const saturationPlugin = {id:"saturationPlugin", afterDatasetsDraw(ci) {
     if(currentGraphMode !== "normal") return;
     const pts = ci.options.plugins.saturationPlugin?.points || [];
@@ -571,7 +574,6 @@
     const{ctx, chartArea, scales:{y}} = ci;
     if(!y || !chartArea) return;
 
-    // מציאת הרוויה הגבוהה ביותר מכל הנקודות
     const maxSat = Math.max(...pts.map(p => p.weight));
     if(!maxSat) return;
 
@@ -579,7 +581,6 @@
     if(py < chartArea.top || py > chartArea.bottom) return;
 
     ctx.save();
-    // קו אדום מקוקו לאורך כל הגרף
     ctx.beginPath();
     ctx.moveTo(chartArea.left, py);
     ctx.lineTo(chartArea.right, py);
@@ -589,7 +590,6 @@
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // תווית בצד שמאל
     ctx.font      = "bold 10px Arial";
     ctx.fillStyle = "rgba(255, 80, 80, 0.9)";
     ctx.textAlign = "left";
@@ -706,7 +706,6 @@
             return new Date(ts).toLocaleString("en-US",{timeZone:THAILAND_TIMEZONE,month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false});
           },
           label(context){
-            // רק dataset ראשון (Weight) מציג נתונים — שאר ה-datasets מוסתרים מהטולטיפ
             if(context.datasetIndex !== 0) return null;
             const idx=context.dataIndex,p=selectedPoints[idx];if(!p)return null;
             if(currentGraphMode==="dryback"){
@@ -738,7 +737,7 @@
       const xScale = chart.scales.x;
       let clickedIdx = Math.round(xScale.getValueForPixel(x));
       clickedIdx = Math.max(0, Math.min(clickedIdx, currentChartTimestamps.length-1));
-      let snapIdx = -1, minDist = 30;
+      let snapIdx = -1, minDist = 5;
       for (let i = 0; i < lastAnalysis.analysis.irrigationMarkers.length; i++) {
         if (lastAnalysis.analysis.irrigationMarkers[i] !== null) {
           const dist = Math.abs(i - clickedIdx);
@@ -759,7 +758,7 @@
       const xScale = chart.scales.x;
       let clickedIdx = Math.round(xScale.getValueForPixel(x));
       clickedIdx = Math.max(0, Math.min(clickedIdx, currentChartTimestamps.length-1));
-      let snapIdx = -1, minDist = 30;
+      let snapIdx = -1, minDist = 5;
       for (let i = 0; i < lastAnalysis.analysis.irrigationMarkers.length; i++) {
         if (lastAnalysis.analysis.irrigationMarkers[i] !== null) {
           const dist = Math.abs(i - clickedIdx);
@@ -774,36 +773,66 @@
     }, {passive:false});
   }
 
-  // ── UPDATED fetchData: apply filterLowWeight before removeOutliers ────────
-  async function fetchData(hours){
-    const url="https://api.thingspeak.com/channels/"+channelID+"/feeds.json?api_key="+apiKey+"&results=8000";
-    const res=await fetch(url),data=await res.json();
-    const raw=(data.feeds||[])
-      .map(f=>({time:new Date(f.created_at),value:parseFloat(f.field1)}))
-      .filter(p=>!isNaN(p.value))
-      .sort((a,b)=>a.time-b.time);
-    const lowFiltered = filterLowWeight(raw);              // ← NEW
-    const allPoints=removeOutliers(lowFiltered);           // ← changed from raw
-    const cutoff=Date.now()-hours*3600000;
-    const selectedPoints=allPoints.filter(p=>p.time.getTime()>=cutoff);
-    const analysis=analyzeData(allPoints,selectedPoints);
-    lastAnalysis={allPoints,selectedPoints,analysis};updateStats(analysis);updateChart(selectedPoints,analysis);
+  async function fetchFromFirebase() {
+    const url = firebaseHistoryUrl + ".json?orderBy=\"$key\"&limitToLast=2880";
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data) return [];
+    const rawEntries = Object.entries(data).map(([key, value]) => {
+      let time;
+      const numKey = parseInt(key);
+      if (key.length === 13) {
+        const ts = Math.floor(numKey / 1000);
+        const sub = numKey % 1000;
+        time = new Date(ts * 1000 + sub);
+      } else if (key.length === 10 && numKey > 1500000000) {
+        time = new Date(numKey * 1000);
+      } else {
+        time = new Date(Date.now() - (2880 - numKey) * 60000);
+      }
+      return { time, value: parseFloat(value) };
+    }).filter(p => !isNaN(p.value)).sort((a,b) => a.time - b.time);
+
+    const raw = [];
+    for (let i = 0; i < rawEntries.length; i++) {
+      const p = rawEntries[i];
+      if (i === 0) {
+        raw.push(p);
+        continue;
+      }
+      const prev = raw[raw.length - 1];
+      const dt = p.time.getTime() - prev.time.getTime();
+      if (dt <= 0) {
+        raw.push({ time: new Date(prev.time.getTime() + 1000), value: p.value });
+      } else {
+        raw.push(p);
+      }
+    }
+    return raw;
   }
 
-  async function fetchDataWindow(startMs,endMs){
-    const url="https://api.thingspeak.com/channels/"+channelID+"/feeds.json?api_key="+apiKey+"&results=8000";
-    const res=await fetch(url),data=await res.json();
-    const raw=(data.feeds||[])
-      .map(f=>({time:new Date(f.created_at),value:parseFloat(f.field1)}))
-      .filter(p=>!isNaN(p.value))
-      .sort((a,b)=>a.time-b.time);
-    const lowFiltered = filterLowWeight(raw);              // ← NEW
-    const allPoints=removeOutliers(lowFiltered);           // ← changed from raw
-    const selectedPoints=allPoints.filter(p=>p.time.getTime()>=startMs&&p.time.getTime()<=endMs);
-    const analysis=analyzeData(allPoints,selectedPoints);
-    lastAnalysis={allPoints,selectedPoints,analysis};updateStats(analysis);updateChart(selectedPoints,analysis);
+  async function fetchData(hours){
+    const raw = await fetchFromFirebase();
+    const lowFiltered = filterLowWeight(raw);
+    const allPoints = removeOutliers(lowFiltered);
+    const cutoff = Date.now() - hours * 3600000;
+    const selectedPoints = allPoints.filter(p => p.time.getTime() >= cutoff);
+    const analysis = analyzeData(allPoints, selectedPoints);
+    lastAnalysis = {allPoints, selectedPoints, analysis};
+    updateStats(analysis);
+    updateChart(selectedPoints, analysis);
   }
-  // ─────────────────────────────────────────────────────────────────────────
+
+  async function fetchDataWindow(startMs, endMs){
+    const raw = await fetchFromFirebase();
+    const lowFiltered = filterLowWeight(raw);
+    const allPoints = removeOutliers(lowFiltered);
+    const selectedPoints = allPoints.filter(p => p.time.getTime() >= startMs && p.time.getTime() <= endMs);
+    const analysis = analyzeData(allPoints, selectedPoints);
+    lastAnalysis = {allPoints, selectedPoints, analysis};
+    updateStats(analysis);
+    updateChart(selectedPoints, analysis);
+  }
 
   function updateLightsBtn() {
     const el = document.getElementById("lightsBtn");
@@ -885,6 +914,6 @@
   },60000);
 </script>
 
-  <div style="text-align:center;color:rgba(255,255,255,0.2);font-size:11px;padding:10px;">v 14/04/2026 17:10</div>
+  <div style="text-align:center;color:rgba(255,255,255,0.2);font-size:11px;padding:10px;">v 16/04/2026 21:30</div>
 </body>
 </html>
